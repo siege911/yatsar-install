@@ -12,7 +12,8 @@
 #
 # Unattended: set YATSAR_EDITION, YATSAR_PUBLIC_HOSTNAME, YATSAR_APP_HOSTNAME,
 # YATSAR_BOOTSTRAP_ADMIN_PASSWORD, YATSAR_HUB_URL, YATSAR_REGISTRY_TOKEN and
-# YATSAR_RELEASE_PUBLIC_KEY in the environment; a value that is set is not asked for.
+# YATSAR_RELEASE_PUBLIC_KEY in the environment; a value that is set is not asked for. A Hub also
+# takes YATSAR_DEMO_HOSTNAME and YATSAR_DEMO_APP_HOSTNAME, the two names of its Demo.
 set -euo pipefail
 
 # Defaults for this product. The release build stamps the public key when it publishes this file.
@@ -47,7 +48,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --edition) EDITION=${2:-}; shift 2 ;;
     --version) TAG=${2:-}; shift 2 ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option $1" ;;
   esac
 done
@@ -82,6 +83,18 @@ hostname_ok "$HOST" || die "'$HOST' is not a hostname"
 APP_HOST=${YATSAR_APP_HOSTNAME:-}
 [ -n "$APP_HOST" ] || ask APP_HOST "Hostname for Apps (a second name for this server)" "apps.$HOST"
 hostname_ok "$APP_HOST" && [ "$APP_HOST" != "$HOST" ] || die "the Apps hostname must be a different hostname"
+# A Hub carries a Demo Platform on two more names (R408).
+DEMO_HOST=""
+DEMO_APP_HOST=""
+if [ "$EDITION" != platform ]; then
+  DEMO_HOST=${YATSAR_DEMO_HOSTNAME:-}
+  [ -n "$DEMO_HOST" ] || ask DEMO_HOST "Hostname for this Hub's Demo (a third name for this server)" "demo.$HOST"
+  DEMO_APP_HOST=${YATSAR_DEMO_APP_HOSTNAME:-}
+  [ -n "$DEMO_APP_HOST" ] || ask DEMO_APP_HOST "Hostname for the Demo's Apps (a fourth name)" "apps.$DEMO_HOST"
+  hostname_ok "$DEMO_HOST" && hostname_ok "$DEMO_APP_HOST" || die "the Demo hostnames must be hostnames"
+  [ "$(printf '%s\n' "$HOST" "$APP_HOST" "$DEMO_HOST" "$DEMO_APP_HOST" | sort -u | wc -l)" -eq 4 ] \
+    || die "the four hostnames must all be different"
+fi
 
 # 3. The break-glass Admin: the local account that signs in when nothing else can.
 PASSWORD=${YATSAR_BOOTSTRAP_ADMIN_PASSWORD:-}
@@ -171,6 +184,9 @@ if [ "$EDITION" = yatsar ]; then
   getent group yatsar-signing >/dev/null || groupadd --system yatsar-signing
   id yatsar-signer >/dev/null 2>&1 || useradd --system --gid yatsar-signing --shell /usr/sbin/nologin yatsar-signer
   install -d -o root -g yatsar-signing -m 750 "$SIGNER_DIR"
+  # The unit folder was made under umask 077. The signer's own user must pass through it to
+  # reach the spool; 711 lets it pass without listing the folder. Its secrets are 600 files.
+  chmod 711 "$UNIT"
   install -d -o root -g yatsar-signing -m 2770 "$UNIT/release-signing"
   if [ ! -f "$SIGNER_DIR/release.key" ]; then
     say ""
@@ -212,6 +228,9 @@ YATSAR_HUB_URL=$HUB_URL
 YATSAR_RELEASE_PUBLIC_KEY=$RELEASE_PUBLIC_KEY
 $SIGNING
 ENV
+if [ -n "$DEMO_HOST" ]; then
+  printf 'YATSAR_DEMO_HOSTNAME=%s\nYATSAR_DEMO_APP_HOSTNAME=%s\n' "$DEMO_HOST" "$DEMO_APP_HOST" >> "$UNIT/.env"
+fi
 printf 'YATSAR_IMAGE=%s\n' "$IMAGE" > "$UNIT/release.env"
 cat > /etc/yatsar/updater.json <<JSON
 {
@@ -263,7 +282,8 @@ say ""
 say "Yatsar $VERSION is running: https://$HOST"
 say "  Sign in as: admin (the break-glass Admin) with the password you chose."
 [ "$EDITION" = yatsar ] || say "  Its Hub:    $HUB_URL. Claim this deployment there to license it."
-say "  Ports 80 and 443 must be open to the internet, and both hostnames must point here."
+say "  Ports 80 and 443 must be open to the internet, and every hostname must point here."
+[ -z "$DEMO_HOST" ] || say "  Its Demo:   https://$DEMO_HOST (Apps at $DEMO_APP_HOST). An Admin opens it from Admin > Demo."
 say ""
 say "Store what follows now, away from this server. It is not shown again."
 say "  Vault key (without it, saved Connector Credentials cannot be recovered):"
